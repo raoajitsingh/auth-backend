@@ -1,12 +1,13 @@
-import express from "express";
+// routes/auth.js
+import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
+import { verifyTurnstile } from "../middleware/verifyTurnstile.js"; // <- keep ONLY this import
 import User from "../models/User.js";
 import { transport } from "../lib/email.js";
-import { verifyTurnstile } from "../middleware/turnstile.js";
 
 import {
   loginLimiter,
@@ -15,12 +16,8 @@ import {
   forgotLimiter,
 } from "../middleware/rate.js";
 
-const router = express.Router();
-const normEmail = (raw) => emailSchema.parse(raw).toLowerCase();
-
-// ====== Zod validators ======
+/* ========= Zod validators ========= */
 const emailSchema = z.string().email("Invalid email format");
-
 const passwordSchema = z
   .string()
   .min(8, "Password must be at least 8 characters")
@@ -29,13 +26,17 @@ const passwordSchema = z
   .regex(/[0-9]/, "Must contain a number")
   .regex(/[^A-Za-z0-9]/, "Must contain a special character");
 
+// Token is verified by middleware; keep optional here to avoid double-failing
 const completeRegisterSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
-  cf_turnstile_token: z.string().min(1, "Bot check required"),
+  cf_turnstile_token: z.string().min(1).optional(),
 });
 
-// ====== Helpers ======
+/* ========= Helpers ========= */
+const router = Router();
+const normEmail = (raw) => emailSchema.parse(raw).toLowerCase();
+
 const signToken = (id) =>
   jwt.sign({ sub: id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRES || "7d",
@@ -50,7 +51,7 @@ async function sendOtpEmail(to, subject, code) {
   });
 }
 
-// ====== 1) START REGISTER ======
+/* ========= 1) START REGISTER ========= */
 router.post("/start-register", startRegisterLimiter, async (req, res, next) => {
   try {
     const email = normEmail(req.body.email);
@@ -94,7 +95,7 @@ router.post("/start-register", startRegisterLimiter, async (req, res, next) => {
   }
 });
 
-// ====== 2) VERIFY OTP ======
+/* ========= 2) VERIFY OTP ========= */
 router.post("/verify-otp", verifyOtpLimiter, async (req, res, next) => {
   try {
     const email = normEmail(req.body.email);
@@ -113,7 +114,7 @@ router.post("/verify-otp", verifyOtpLimiter, async (req, res, next) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    // Mark OTP verified but don't set password yet
+    // Mark OTP verified
     user.otpCode = null;
     user.otpExpiresAt = null;
     user.otpVerified = true;
@@ -125,11 +126,10 @@ router.post("/verify-otp", verifyOtpLimiter, async (req, res, next) => {
   }
 });
 
-// ====== 3) COMPLETE REGISTER ======
+/* ========= 3) COMPLETE REGISTER ========= */
 router.post(
   "/complete-register",
-  verifyTurnstile,
-  verifyTurnstile,
+  verifyTurnstile, // <- keep this; DO NOT include undefined "completeRegister"
   async (req, res, next) => {
     try {
       const email = normEmail(req.body.email);
@@ -161,13 +161,13 @@ router.post(
     }
   }
 );
-// ====== LOGIN ======
+
+/* ========= LOGIN ========= */
 router.post("/login", loginLimiter, verifyTurnstile, async (req, res, next) => {
   try {
     const email = normEmail(req.body.email);
     const { password } = req.body;
 
-    // basic checks
     if (!email || !password) {
       return res.status(400).json({ error: "Email and password required" });
     }
@@ -177,7 +177,6 @@ router.post("/login", loginLimiter, verifyTurnstile, async (req, res, next) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    // must be fully verified (OTP done + password set)
     if (!user.isVerified) {
       return res
         .status(403)
@@ -187,16 +186,14 @@ router.post("/login", loginLimiter, verifyTurnstile, async (req, res, next) => {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-    const token = jwt.sign({ sub: user._id }, process.env.JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES || "7d",
-    });
-
+    const token = signToken(user._id);
     res.json({ message: "Logged in", token });
   } catch (e) {
     next(e);
   }
 });
-// ====== FORGOT PASSWORD (send OTP to email) ======
+
+/* ========= FORGOT PASSWORD (send OTP) ========= */
 router.post(
   "/forgot-password",
   forgotLimiter,
@@ -236,7 +233,7 @@ router.post(
   }
 );
 
-// ====== VERIFY FORGOT PASSWORD OTP ======
+/* ========= VERIFY FORGOT PASSWORD OTP ========= */
 router.post("/verify-reset-otp", verifyOtpLimiter, async (req, res, next) => {
   try {
     const email = normEmail(req.body.email);
@@ -266,33 +263,28 @@ router.post("/verify-reset-otp", verifyOtpLimiter, async (req, res, next) => {
   }
 });
 
-// ====== RESET PASSWORD ======
-router.post(
-  "/reset-password",
-  verifyTurnstile,
-  verifyTurnstile,
-  async (req, res, next) => {
-    try {
-      const email = normEmail(req.body.email);
-      const { password } = completeRegisterSchema.parse({ ...req.body, email });
+/* ========= RESET PASSWORD ========= */
+router.post("/reset-password", verifyTurnstile, async (req, res, next) => {
+  try {
+    const email = normEmail(req.body.email);
+    const { password } = completeRegisterSchema.parse({ ...req.body, email });
 
-      const user = await User.findOne({ email });
-      if (!user || !user.passwordHash) {
-        return res.status(404).json({ error: "Account not found" });
-      }
-      if (!user.otpVerified) {
-        return res.status(403).json({ error: "Please verify OTP first" });
-      }
-
-      user.passwordHash = await bcrypt.hash(password, 12);
-      user.otpVerified = false;
-      await user.save();
-
-      res.json({ message: "Password reset successful" });
-    } catch (e) {
-      next(e);
+    const user = await User.findOne({ email });
+    if (!user || !user.passwordHash) {
+      return res.status(404).json({ error: "Account not found" });
     }
+    if (!user.otpVerified) {
+      return res.status(403).json({ error: "Please verify OTP first" });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 12);
+    user.otpVerified = false;
+    await user.save();
+
+    res.json({ message: "Password reset successful" });
+  } catch (e) {
+    next(e);
   }
-);
+});
 
 export default router;

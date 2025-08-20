@@ -5,7 +5,12 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "start": "node server.js",
+    "build": "echo \"no build step\"",
     "dev": "nodemon server.js"
+  },
+  "engines": {
+    "node": ">=18 <=22"
   },
   "keywords": [],
   "author": "",
