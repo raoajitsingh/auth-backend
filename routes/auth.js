@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
-import { verifyTurnstile } from "../middleware/verifyTurnstile.js"; // <- keep ONLY this import
+import { verifyTurnstile } from "../middleware/verifyTurnstile.js"; // keep this import
 import User from "../models/User.js";
 import { transport } from "../lib/email.js";
 
@@ -127,40 +127,36 @@ router.post("/verify-otp", verifyOtpLimiter, async (req, res, next) => {
 });
 
 /* ========= 3) COMPLETE REGISTER ========= */
-router.post(
-  "/complete-register",
-  verifyTurnstile, // <- keep this; DO NOT include undefined "completeRegister"
-  async (req, res, next) => {
-    try {
-      const email = normEmail(req.body.email);
-      const { password } = completeRegisterSchema.parse({ ...req.body, email });
+router.post("/complete-register", verifyTurnstile, async (req, res, next) => {
+  try {
+    const email = normEmail(req.body.email);
+    const { password } = completeRegisterSchema.parse({ ...req.body, email });
 
-      const user = await User.findOne({ email });
-      if (!user) {
-        return res
-          .status(404)
-          .json({ error: "User not found. Please register again." });
-      }
-      if (!user.otpVerified) {
-        return res.status(403).json({ error: "Please verify OTP first" });
-      }
-      if (user.passwordHash) {
-        return res.status(409).json({ error: "Account already completed" });
-      }
-
-      // Save password & mark fully verified
-      user.passwordHash = await bcrypt.hash(password, 12);
-      user.isVerified = true;
-      user.otpVerified = false;
-      await user.save();
-
-      const token = signToken(user._id);
-      res.json({ message: "Account created successfully", token });
-    } catch (e) {
-      next(e);
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ error: "User not found. Please register again." });
     }
+    if (!user.otpVerified) {
+      return res.status(403).json({ error: "Please verify OTP first" });
+    }
+    if (user.passwordHash) {
+      return res.status(409).json({ error: "Account already completed" });
+    }
+
+    // Save password & mark fully verified
+    user.passwordHash = await bcrypt.hash(password, 12);
+    user.isVerified = true;
+    user.otpVerified = false;
+    await user.save();
+
+    const token = signToken(user._id);
+    res.json({ message: "Account created successfully", token });
+  } catch (e) {
+    next(e);
   }
-);
+});
 
 /* ========= LOGIN ========= */
 router.post("/login", loginLimiter, verifyTurnstile, async (req, res, next) => {

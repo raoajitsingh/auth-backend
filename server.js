@@ -14,19 +14,24 @@ app.set("trust proxy", 1); // correct IPs behind Render/Proxy
 
 /* ================== CORS ================== */
 /**
- * Allow explicit origins from CORS_ORIGIN env (comma-separated)
- * and any *.vercel.app previews. Handles preflight cleanly.
+ * Allow explicit origins from CORS_ORIGIN env (comma-separated),
+ * CLIENT_URL, localhost:5173 (dev), and any *.vercel.app previews.
  */
 const explicitAllowed = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
+if (process.env.CLIENT_URL) explicitAllowed.push(process.env.CLIENT_URL);
+if (process.env.NODE_ENV !== "production") {
+  explicitAllowed.push("http://localhost:5173", "http://127.0.0.1:5173");
+}
+
 function isAllowedOrigin(origin) {
   if (!origin) return true; // allow non-browser clients (Postman/cURL)
   try {
-    const { hostname } = new URL(origin);
-    if (hostname.endsWith(".vercel.app")) return true; // preview deploys
+    const url = new URL(origin);
+    if (url.hostname.endsWith(".vercel.app")) return true; // preview deploys
     return explicitAllowed.includes(origin);
   } catch {
     return false;
@@ -51,7 +56,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
 /* =============== Core middleware =============== */
 app.use(express.json());
@@ -66,12 +70,29 @@ app.use(
   })
 );
 
-/* =============== Routes =============== */
+/* =============== Health & root =============== */
 app.get("/", (_req, res) => res.json({ ok: true, service: "auth-backend" }));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
+/* =============== Routes =============== */
 // All auth endpoints mounted under /api/auth/*
 app.use("/api/auth", authRoutes);
+
+/* =============== 404 (Express 5-safe) =============== */
+// IMPORTANT: place AFTER all routes
+app.use((req, res) => {
+  res.status(404).json({ error: "Not found" });
+});
+
+/* =============== Error handler (Express 5) =============== */
+// Any thrown/next(err) goes here
+app.use((err, req, res, _next) => {
+  console.error("Unhandled error:", err?.message || err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({
+    error: err?.message || "Internal Server Error",
+  });
+});
 
 /* =============== SMTP check (non-blocking) =============== */
 (async () => {
